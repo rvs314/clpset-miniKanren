@@ -5,10 +5,8 @@
   (fresh ()
     (!ino x s-x)
     (conde
-      ((ino x s)
-       (== (set s-x x) s))
-      ((!ino x s)
-       (== s-x s)))))
+      ((ino x s)  (== (set s-x x) s))
+      ((!ino x s) (== s-x s)))))
 
 (test-check "set-removeo"
   (run* (q) (set-removeo (set ∅ 'dog 'cat 'rat) 'cat q))

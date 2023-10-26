@@ -39,15 +39,39 @@
 (define C->disj (lambda (C) (cadddr (cdr C))))
 (define C->symbol (lambda (C) (cadddr (cddr C))))
 (define S->s (lambda (S) (with-S empty-s S)))
-(define with-S (lambda (s S) (list S (s->C s))))
-(define with-C (lambda (s C) (list (s->S s) C)))
-(define with-C-set (lambda (C cs) (list cs (C->=/= C) (C->!in C) (C->union C) (C->disj C) (C->symbol C))))
-(define with-C-=/= (lambda (C cs) (list (C->set C) cs (C->!in C) (C->union C) (C->disj C) (C->symbol C))))
-(define with-C-!in (lambda (C cs) (list (C->set C) (C->=/= C) cs (C->union C) (C->disj C) (C->symbol C))))
-(define with-C-union (lambda (C cs) (list (C->set C) (C->=/= C) (C->!in C) cs (C->disj C) (C->symbol C))))
-(define with-C-disj (lambda (C cs) (list (C->set C) (C->=/= C) (C->!in C) (C->union C) cs (C->symbol C))))
-(define with-C-symbol (lambda (C cs) (list (C->set C) (C->=/= C) (C->!in C) (C->union C) (C->disj C) cs)))
+(define with-S
+  (lambda (s S)
+    (list S (s->C s))))
+(define with-C
+  (lambda (s C)
+    (list (s->S s) C)))
+(define with-C-set
+  (lambda (C cs)
+    (list cs (C->=/= C) (C->!in C) (C->union C) (C->disj C) (C->symbol C))))
+(define with-C-=/=
+  (lambda (C cs)
+    (list (C->set C) cs (C->!in C) (C->union C) (C->disj C) (C->symbol C))))
+(define with-C-!in
+  (lambda (C cs)
+    (list (C->set C) (C->=/= C) cs (C->union C) (C->disj C) (C->symbol C))))
+(define with-C-union
+  (lambda (C cs)
+    (list (C->set C) (C->=/= C) (C->!in C) cs (C->disj C) (C->symbol C))))
+(define with-C-disj
+  (lambda (C cs)
+    (list (C->set C) (C->=/= C) (C->!in C) (C->union C) cs (C->symbol C))))
+(define with-C-symbol
+  (lambda (C cs)
+    (list (C->set C) (C->=/= C) (C->!in C) (C->union C) (C->disj C) cs)))
 (define empty-s '(() (() () () () () ())))
+
+#|
+A set is either:
+- The empty set (the empty vector `#()`)
+- A non-empty set {t₁, t₂, ... | b} (the two-element vector: `#(b (list t₁ t₂ ...))`)
+  Here, {t₁, t₂, ...} are the immediate members (`set-mems`), and b is the `set-base`
+  The set's is either itself a set or a variable.
+|#
 
 (define empty-set '#())
 (define ∅ empty-set)
@@ -59,6 +83,14 @@
 (define empty-set? (lambda (x) (and (vector? x) (= (vector-length x) 0))))
 (define non-empty-set? (lambda (x) (and (vector? x) (= (vector-length x) 2))))
 (define set? (lambda (x) (or (empty-set? x) (non-empty-set? x))))
+
+#|
+`(normalize-set set elements state)` is a smart constructor for a set,
+which puts it in its "normal form" WRT a given state.
+
+A set is in normal form iff it has a nonzero number of immediate members and
+its base is either a variable or the empty set
+|#
 (define normalize-set
   (lambda (x es s)
     (cond
@@ -69,35 +101,68 @@
                       s))
       ((and (var? x) (not (null? es))) (make-set x es))
       ((and (symbol? x) (not (null? es))) (make-set x es)))))
+
+#|
+The `(set-tail set)` of `set` is either:
+- it's base, if it is nonempty and ground
+- itself, if it is a variable
+|#
 (define set-tail
   (lambda (x)
     (cond
       ((empty-set? x) #f)
       ((non-empty-set? x) (set-base x))
       ((var? x) x))))
+
 (define with-set-tail
   (lambda (t x)
     (cond
       ((non-empty-set? x) (make-set t (set-mems x)))
       ((var? x) t))))
+
+#|
+`(non-empty-set-first normal-set)` and `(non-empty-set-rest normal-set)`
+are the first element and non-first elements of a normalized, non-empty set
+|#
+
 (define non-empty-set-first
   (lambda (x) (car (set-mems x))))
+
 (define non-empty-set-rest
   (lambda (x)
     (let ((rest-mems (cdr (set-mems x))))
       (if (null? rest-mems)
           (set-base x)
           (make-set (set-base x) rest-mems)))))
+
+#|
+A naive conversion from lists to and from sets,
+mainly for use within operators that don't understand sets,
+like `walk` or `occurs-check`
+|#
 (define set->list (lambda (x) (cons (set-base x) (set-mems x))))
 (define list->set (lambda (x) (make-set (car x) (cdr x))))
+
+#|
+Bind a set of constraints onto a state, given a lens to it
+from the constraint store (`C->c` and `with-C-c`) and the procedure for
+constructing the constraint (`apply-c`)
+|#
 (define check-constraints
   (lambda (C->c with-C-c apply-c)
     (lambda (s)
-      (let loop ((cs (C->c (s->C s))) (s (with-C s (with-C-c (s->C s) '()))))
+      (let loop ((cs (C->c (s->C s)))
+                 (s (with-C s (with-C-c (s->C s) '()))))
         (cond
           ((not s) #f)
           ((null? cs) s)
-          (else (loop (cdr cs) (bind s (apply-c (car cs))))))))))
+          (else (loop (cdr cs)
+                      (bind s (apply-c (car cs))))))))))
+
+#|
+Traverse `tree`, collecting the branches and leaves which satisfy `predicate`.
+Do not expand unbound variables
+|#
 (define tree-collect
   (lambda (predicate tree acc)
     (let ((acc (if (predicate tree)
@@ -110,14 +175,25 @@
         ((non-empty-set? tree)
          (tree-collect predicate (set->list tree) acc))
         (else acc)))))
+
+#|
+Given a tree `vs`, then a state `s`,
+ensure all concrete non-empty sets within `vs` are sets
+|#
 (define infer-sets
   (lambda (vs)
     (lambda (s)
-      (let loop ((vs (tree-collect non-empty-set? vs '())) (s s))
+      (let loop ((vs (tree-collect non-empty-set? vs '()))
+                 (s s))
         (cond
           ((not s) #f)
           ((null? vs) s)
           (else (loop (cdr vs) (bind s (seto (car vs))))))))))
+
+#|
+Given a state `s` and a tree `vs`,
+infer the concrete sets of `vs`, then check all constraints
+|#
 (define run-constraints
   (lambda (s . vs)
     (let* ((s (with-C s (walk* (s->C s) s)))
@@ -130,6 +206,11 @@
            (s (bind s (check-constraints C->=/= with-C-=/= (lambda (args) (apply =/= args))))))
       s)))
 
+#|
+Given a term `u` and a state `s`,
+return the value of the term as either a compound term,
+ground term or fresh variable
+|#
 (define walk
   (lambda (u s)
     (cond
@@ -137,16 +218,28 @@
        (lambda (pr) (walk (rhs pr) s)))
       (else u))))
 
+#|
+Given a name `x`, value `v` and state `s`,
+bind the name-value onto the state, then run the constraints
+|#
 (define ext-s
   (lambda (x v s)
     (run-constraints (with-S s (cons `(,x . ,v) (s->S s))) v)))
 
+#|
+Given a name `x`, value `v` and state `s`,
+bind the name-value onto the state, if the occurs-check passes
+|#
 (define ext-s-check
   (lambda (x v s)
     (cond
       ((occurs-check x v s) #f)
       (else (ext-s x v s)))))
 
+#|
+Check that `x` is not present inside `v`
+for store `s`
+|#
 (define occurs-check
   (lambda (x v s)
     (let ((v (walk v s)))
@@ -160,6 +253,12 @@
          (occurs-check x (set->list v) s))
         (else #f)))))
 
+#|
+Given a term `w` and a store `s`,
+Instantiate the term into either
+a ground term or one which includes fresh
+variables
+|#
 (define walk*
   (lambda (w s)
     (let ((v (walk w s)))
@@ -174,6 +273,10 @@
            (list->set (walk* (set->list ns) s))))
         (else v)))))
 
+#|
+Given a term `v` and state `s`
+Return a new state which names all of the fresh variables
+|#
 (define reify-s
   (lambda (v s)
     (let ((v (walk v s)))
@@ -186,28 +289,50 @@
          (reify-s (set->list v) s))
         (else s)))))
 
+#|
+Create a name for the Nth unbound variable
+|#
 (define reify-name
   (lambda (n)
     (string->symbol
       (string-append "_" "." (number->string n)))))
 
+#|
+The set-union of two lists
+The second list must not contain duplicates
+|#
 (define join
   (lambda (a b)
     (cond
       ((null? a) b)
       ((member (car a) b) (join (cdr a) b))
       (else (join (cdr a) (cons (car a) b))))))
+
+#|
+Given a list of objects `x`,
+remove duplicates, then sort the objects lexicographically
+|#
 (define reified-sort
   (lambda (x)
-    (sort (lambda (s1 s2) (string<? (format "~a" s1) (format "~a" s2))) (join x '()))))
+    (sort (lambda (s1 s2) (string<? (format "~a" s1) (format "~a" s2)))
+          (join x '()))))
+
+#|
+Given a tag `tag` and a projection into a constraint store `C->c`,
+then a state `s`, a reification `r`,
+and a list of other reified constraints `others`,
+reify the constraint store for the given constriant
+|#
 (define reify-some-constraints
   (lambda (tag C->c)
     (lambda (s r others)
-      (let ((cs (filter (lambda (x) (null? (tree-collect (lambda (v) (var? v)) x '()))) (map (lambda (x) (walk* x r)) (C->c (s->C s))))))
+      (let ((cs (filter (lambda (x)
+                          (null? (tree-collect (lambda (v) (var? v)) x '())))
+                        (map (lambda (x) (walk* x r)) (C->c (s->C s))))))
         (if (null? cs)
           others
-          (cons (cons tag (reified-sort cs))
-            others))))))
+          (cons (cons tag (reified-sort cs)) others))))))
+
 (define reify-symbol-constraints
   (reify-some-constraints 'sym C->symbol))
 (define reify-set-constraints
@@ -220,6 +345,10 @@
   (reify-some-constraints 'union C->union))
 (define reify-disj-constraints
   (reify-some-constraints 'disj C->disj))
+
+#|
+Reify all constraints
+|#
 (define reify-constraints
   (lambda (s r)
     (reify-symbol-constraints s r
