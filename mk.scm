@@ -10,6 +10,13 @@
   (syntax-rules ()
     ((_ (x) g ...) (run #f (x) g ...))))
 
+(define-syntax runs*
+  (syntax-rules ()
+    ((_ (x ...) g ...) (run* (l)
+                         (fresh (x ...)
+                           (== l (list x ...))
+                           g ...)))))
+
 (define-syntax rhs
   (syntax-rules ()
     ((_ x) (cdr x))))
@@ -858,3 +865,37 @@ Reify all constraints
     (condu
       (g succeed)
       ((== #f #f) fail))))
+
+(define (splitlast lst)
+  (cond [(not (pair? lst)) (error 'splitlast "Not a non-empty list" lst)]
+        [(null? (cdr lst)) (values '() (car lst))]
+        [else              (let-values ([(h t) (splitlast (cdr lst))])
+                             (values (cons (car lst) h) t))]))
+
+(define (print-threads stream)
+  (define (variable-name var)
+    (symbol->string (vector-ref var 0)))
+  (define thread-counter 0)
+  (define (print-thread thread)
+    (set! thread-counter (add1 thread-counter))
+    (set! thread (sort! (lambda (p1 p2)
+                          (string<? (variable-name (car p1))
+                                    (variable-name (car p2))))
+                        thread))
+    (printf "Thread ~s:~%" thread-counter)
+    (for-each
+     (lambda (p)
+       (printf "~a -> ~a~%" (variable-name (car p))
+                            (cdr p))) 
+     thread))
+  (define elems
+    (cond
+     [(not (procedure? stream))           stream]
+     [(= (procedure-arity-mask stream) 1) (take -1 stream)]
+     [(= (procedure-arity-mask stream) 2) (take -1 (stream empty-s))]))
+  (define-values (threads constraints)
+    (if (null? elems)
+        (values '() "no results")
+        (splitlast elems)))
+  (for-each print-thread threads)
+  (printf "Given: ~a~%" constraints))
