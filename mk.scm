@@ -10,12 +10,17 @@
   (syntax-rules ()
     ((_ (x) g ...) (run #f (x) g ...))))
 
+(define-syntax runs
+  (syntax-rules ()
+    ((_ k (x ...) g ...)
+     (run k (l)
+       (fresh (x ...)
+         (== l (list x ...))
+         g ...)))))
+
 (define-syntax runs*
   (syntax-rules ()
-    ((_ (x ...) g ...) (run* (l)
-                         (fresh (x ...)
-                           (== l (list x ...))
-                           g ...)))))
+    ((_ (x ...) g ...) (runs #f (x ...) g ...))))
 
 (define-syntax rhs
   (syntax-rules ()
@@ -82,7 +87,7 @@ A set is either:
 
 (define empty-set '#())
 (define ∅ empty-set)
-(define make-set (lambda (base mems) `#(,base ,mems)))
+(define make-set (lambda (base mems) (if (null? mems) ∅ `#(,base ,mems))))
 (define set-map vector-map)
 (define set-base (lambda (x) (vector-ref x 0)))
 (define set-mems (lambda (x) (vector-ref x 1)))
@@ -99,15 +104,19 @@ A set is in normal form iff it has a nonzero number of immediate members and
 its base is either a variable or the empty set
 |#
 (define normalize-set
-  (lambda (x es s)
-    (cond
-      ((empty-set? x) (if (null? es) empty-set (make-set empty-set es)))
-      ((non-empty-set? x)
-       (normalize-set (walk (set-base x) s)
-                      (append (set-mems x) es)
-                      s))
-      ((and (var? x) (not (null? es))) (make-set x es))
-      ((and (symbol? x) (not (null? es))) (make-set x es)))))
+  (case-lambda
+    [(x es s)
+     (cond
+       ((empty-set? x) (if (null? es) empty-set (make-set empty-set es)))
+       ((non-empty-set? x)
+        (normalize-set (walk (set-base x) s)
+                       (append (set-mems x) es)
+                       s))
+       ((and (var? x) (not (null? es))) (make-set x es))
+       ((and (symbol? x) (not (null? es))) (make-set x es))
+       (else             (error 'normalize-set "Cannot normalize this object" x)))]
+    [(set s)
+     (normalize-set set '() s)]))
 
 #|
 The `(set-tail set)` of `set` is either:
@@ -466,6 +475,16 @@ Reify all constraints
            (bind* (g0 s) g ...)
            (bind* (g1 s) g^ ...) ...))))))
 
+(define-syntax conj
+  (syntax-rules ()
+    [(conj goal goal* ...)
+     (conde [goal goal* ...])]))
+
+(define-syntax disj
+  (syntax-rules ()
+    [(disj goal goal* ...)
+     (conde [goal] [goal*] ...)]))
+
 (define-syntax mplus*
   (syntax-rules ()
     ((_ e) e)
@@ -525,19 +544,70 @@ Reify all constraints
        (let ((x (walk* x s)) ...)
          ((fresh () g g* ...) s))))))
 
+(define-syntax when-let*
+  (syntax-rules ()
+    [(when-let* () body ...)
+     (let () body ...)]
+    [(when-let* ([var val] rest ...) body ...)
+     (let ([var val])
+       (and var (when-let* (rest ...)
+                  body ...)))]))
+
+#|
+Given a unary relation and a ground list of objects,
+Holds IFF the relation holds for one object in the list.
+|#
+(define (anyo rel objs)
+  (fold-left (lambda (a x) (disj (rel x) a)) fail objs))
+
+(define (allo rel objs)
+  (fold-left (lambda (a x) (conj (rel x) a)) succeed objs))
+
+;; #|
+;; Given two non-empty set objects S1 and S2, unify
+;; them and their contents with respect to state S
+;; |#
+;; (define (unify-sets s1 s2 s)
+;;   (let ([s1 (normalize-set s1 s)]
+;;         [s2 (normalize-set s2 s)])
+;;     (let-values ([(m1 shared m2)
+;;                   (list-overlap (set-mems s1) (set-mems s2)
+;;                                 (curryr trivially-unifies? s))])
+;;       (if (trivially-unifies? (set-base s1) (set-base s2) s)
+;;           (comment "There is no base")
+;;           (comment ""))
+;;       (bind
+;;        (unify (set-base s1) (set-base s2) s)
+;;        (allo (lambda (o2) (anyo (lambda (o1) (== o1 o2)) m1)) m2)
+;;        (let loop ([m2 m2] [cont fail])
+;;          (if (null? m2)
+;;              cont
+;;              (lambda (s)
+;;                (loop (cdr m2) (bind (unify-any) cont))))))
+;;       (let ([s1 (make-set (set-base s1) m1)]
+;;             [s2 (make-set (set-base s2) m2)])
+;;         (bind* (unify (set-base s1) (set-base s2) s)
+;;                (lambda (s)
+;;                  (if (and (null? m1))))
+;;                (conde
+;;                 [(== s1 ∅) (== s2 ∅)]
+;;                 [(fresh (f1 r1 f2 r2)
+;;                    (== s1 (set r1 f1))
+;;                    (== s2 (set r2 f2)))]))))))
+;;       ;; (error 'unify-sets "TODO"))))
+
 (define unify
   (lambda (ou ov s)
     (let ((u (walk ou s))
           (v (walk ov s)))
       (cond
+        ((eqv? u v) s)
         ((and (var? v) (not (var? u))) (unify v u s))
-        ((eq? u v) s)
         ((and (var? u) (not (occurs-check u v s))) (ext-s u v s))
         ((and (pair? u) (pair? v))
-         (let ((s (unify
-                    (car u) (car v) s)))
-           (and s (unify
-                    (cdr u) (cdr v) s))))
+         (when-let* ((s (unify (car u) (car v) s)))
+           (unify
+             (cdr u) (cdr v) s)))
         ((non-empty-set? v)
          (let* ((vns (normalize-set v '() s))
                 (x (set-tail vns)))
@@ -582,9 +652,9 @@ Reify all constraints
                                     ((== t0 tj) (== uns rj))
                                     ((== t0 tj) (== ru vns))
                                     ((fresh (n)
-                                            (== x (set n t0))
-                                            (== (with-set-tail n ru) (with-set-tail n vns))
-                                            (seto n)))
+                                       (== x (set n t0))
+                                       (== (with-set-tail n ru) (with-set-tail n vns))
+                                       (seto n)))
                                     ((loopj cj (cons tj acc)))))))))))))))
              (else #f))))
         ((equal? u v) s)
@@ -595,28 +665,152 @@ Reify all constraints
     (lambdag@ (s)
       (unify u v s))))
 
+#|
+Given a pair P, returns two values: the pair's car, and its cdr
+|#
+(define (car+cdr p)
+  (values (car p) (cdr p)))
+
+#|
+Given a procedure and a set of initial arguments, returns a new
+procedure which, when given a set of final arguments, appends the
+final arguments to the initial arguments, then calls the procedure
+with that new list of arguments.
+|#
+(define (curry proc . args)
+  (lambda rest
+    (apply proc (append args rest))))
+
+#|
+Given a procedure and a set of initial arguments, returns a new
+procedure which, when given a set of final arguments, prepends the
+final arguments to the initial arguments, then calls the procedure
+with that new list of arguments.
+|#
+(define (curryr proc . args)
+  (lambda rest
+    (apply proc (append rest args))))
+
+#|
+Given a list and a predicate, return both the element
+that was found and a list containing all other elements.
+Returns `#f` and `#f` if no element matches. 
+|#
+
+(define (select proc lst)
+  (let loop ([lst lst] [acc '()])
+    (cond
+     [(null? lst)      (values #f #f)]
+     [(proc (car lst)) (values (car lst) (append! (reverse! acc) (cdr lst)))]
+     [else             (loop (cdr lst) (cons (car lst) acc))])))
+
+#|
+Given a set and a predicate, return both an element of the
+set which satifies the predicate, and a set containing all others.
+Returns `#f` and `#f` if no element matches. 
+|#
+(define (set-select pred st)
+  (if (non-empty-set? st)
+      (let-values ([(el rst) (select pred (set-mems st))])
+        (if rst
+            (values el (make-set (set-base st) rst))
+            (let-values ([(el set-rst) (set-select pred (set-base st))])
+              (if set-rst
+                  (values el (make-set set-rst (set-mems st)))
+                  (values #f #f)))))
+      (values #f #f)))
+
+#|
+Given two lists, L1 and L2, return three values:
+- the objects only present in L1,
+- the objects present in both,
+- the objects only present in L2
+Where equality is determined by the binary predicate =.
+The elements included in the shared list are those from L1.
+|#
+(define (list-overlap l1 l2 =)
+  (cond
+   [(null? l1) (values '() '()  l2)]
+   [(null? l2) (values l1  '()  '())]
+   [(pair? l1)
+    (let*-values ([(a d)   (car+cdr l1)]
+                  [(_ rst) (select (curry = a) l2)]
+                  [(l m r) (list-overlap d (or rst l2) =)])
+      (if rst
+          (values l (cons a m) r)
+          (values (cons a l) m r)))]))
+
+#|
+For some definition of equality, are two lists equal without
+respect to ordering?
+|#
+(define same-contents?
+  (case-lambda
+    [(l1 l2) (same-contents? l1 l2 equal?)]
+    [(l1 l2 =) (cond
+                [(null? l1) (null? l2)]
+                [(null? l2) #f]
+                [else
+                 (let ([a (car l1)] [d (cdr l1)])
+                   (let-values [([v r] (select (curry = a) l2))]
+                     (and r (same-contents? d r =))))])]))
+
+#|
+Returns #t iff one term unifies with another in all generalizations of the state.
+It can read from the current state, but does not return a new one.
+|#
+(define (trivially-unifies? o1 o2 s)
+  (let ([o1 (walk o1 s)]
+        [o2 (walk o2 s)])
+    (cond
+     [(eqv? o1 o2) #t]
+     [(and (pair? o1) (pair? o2))
+      (and (trivially-unifies? (car o1) (car o2) s)
+           (trivially-unifies? (cdr o1) (cdr o2) s))]
+     [(and (set? o1) (set? o2))
+      (let* ([o1  (normalize-set o1 '() s)]
+             [o2  (normalize-set o2 '() s)])
+        (cond
+         [(and (empty-set? o1) (empty-set? o2)) #t]
+         [(and (non-empty-set? o1) (non-empty-set? o2))
+          (and
+           (eq? (set-base o1) (set-base o2))
+           (same-contents? (set-mems o1) (set-mems o2)
+                           (lambda (o1 o2)
+                             (trivially-unifies? o1 o2 s))))]))]
+     [else #f])))
+
+;; True IFF a set contains an element relative to a state
+(define (trivially-contains? st el s)
+  (and (set? st)
+       (let ([st (normalize-set st s)])
+         (and (non-empty-set? st)
+              (ormap (curryr trivially-unifies? el s)
+                     (set-mems st))))))
+
 (define ino
   (lambda (t x)
     (lambda (s)
-      (let ((s (bind s (seto x))))
-        (if (not s)
-          #f
-          (let ((x (walk x s)))
-            (cond
-              ((empty-set? x) #f)
-              ((non-empty-set? x)
-               (let ((tx (non-empty-set-first x))
-                     (rx (non-empty-set-rest x)))
-                 (bind s
-                   (conde
-                     ((== tx t))
-                     ((ino t rx))))))
-              ((var? x)
-               (bind s
-                 (fresh (n)
-                   (== x (set n t))
-                   (seto n))))
-              (else #f))))))))
+      (when-let* ((s (bind s (seto x))))
+        (let ((x (walk x s)))
+          (cond
+            ((empty-set? x) #f)
+            ((non-empty-set? x)
+             (let ((tx (non-empty-set-first x))
+                   (rx (non-empty-set-rest x)))
+               (cond
+                [(trivially-unifies? tx t s) s]
+                [(trivially-contains? rx t s) s]
+                [else (bind s
+                        (conde
+                          ((== tx t))
+                          ((ino t rx))))])))
+            ((var? x)
+             (bind s
+               (fresh (n)
+                 (== x (set n t))
+                 (seto n))))
+            (else #f)))))))
 
 (define atom?
   (lambda (x)
@@ -691,141 +885,131 @@ Reify all constraints
 (define !ino
   (lambda (t x)
     (lambda (s)
-      (let ((s (bind s (seto x))))
-        (if (not s)
-          #f
-          (let ((x (walk x s)))
-            (cond
-              ((empty-set? x) s)
-              ((non-empty-set? x)
-               (let ((tx (non-empty-set-first x))
-                     (rx (non-empty-set-rest x)))
-                 (bind s
-                   (fresh ()
-                     (=/= tx t)
-                     (!ino t rx)))))
-              ((and (var? x) (occurs-check x t s))
-               s)
-              (else
-                (with-C s (with-C-!in (s->C s) (cons `(,t ,x) (C->!in (s->C s)))))))))))))
+      (when-let* ((s (bind s (seto x))))
+        (let ((x (walk x s)))
+          (cond
+            ((empty-set? x) s)
+            ((non-empty-set? x)
+             (let ((tx (non-empty-set-first x))
+                   (rx (non-empty-set-rest x)))
+               (bind s
+                 (fresh ()
+                   (=/= tx t)
+                   (!ino t rx)))))
+            ((and (var? x) (occurs-check x t s))
+             s)
+            (else
+              (with-C s (with-C-!in (s->C s) (cons `(,t ,x) (C->!in (s->C s))))))))))))
 
 (define uniono
   (lambda (x y z)
     (lambda (s)
-      (let ((s (((fresh () (seto x) (seto y) (seto z)) s))))
-        (if (not s)
-          #f
-          (let ((x (walk x s))
-                (y (walk y s))
-                (z (walk z s)))
-            (cond
-              ((eq? x y) (bind s (== x z)))
-              ((empty-set? z) (bind s (fresh () (== x z) (== y z))))
-              ((empty-set? x) (bind s (== y z)))
-              ((empty-set? y) (bind s (== x z)))
-              ((non-empty-set? z)
-               (let ((tz (non-empty-set-first z)))
+      (when-let* ((s (((fresh () (seto x) (seto y) (seto z)) s))))
+        (let ((x (walk x s))
+              (y (walk y s))
+              (z (walk z s)))
+          (cond
+            ((eq? x y) (bind s (== x z)))
+            ((empty-set? z) (bind s (fresh () (== x z) (== y z))))
+            ((empty-set? x) (bind s (== y z)))
+            ((empty-set? y) (bind s (== x z)))
+            ((non-empty-set? z)
+             (let ((tz (non-empty-set-first z)))
+               (bind s
+                 (fresh (n)
+                  (== z (set n tz))
+                  (!ino tz n)
+                  (conde
+                    ((fresh (n1)
+                       (== x (set n1 tz))
+                       (!ino tz n1)
+                       (uniono n1 y n)))
+                    ((fresh (n1)
+                       (== y (set n1 tz))
+                       (!ino tz n1)
+                       (uniono x n1 n)))
+                    ((fresh (n1 n2)
+                       (== x (set n1 tz))
+                       (!ino tz n1)
+                       (== y (set n2 tz))
+                       (!ino tz n2)
+                       (uniono n1 n2 n))))))))
+            ((or (non-empty-set? x) (non-empty-set? y))
+             (let-values (((x y) (if (non-empty-set? x) (values x y) (values y x))))
+               (let ((tx (non-empty-set-first x)))
                  (bind s
-                   (fresh (n)
-                    (== z (set n tz))
-                    (!ino tz n)
-                    (conde
-                      ((fresh (n1)
-                         (== x (set n1 tz))
-                         (!ino tz n1)
-                         (uniono n1 y n)))
-                      ((fresh (n1)
-                         (== y (set n1 tz))
-                         (!ino tz n1)
-                         (uniono x n1 n)))
-                      ((fresh (n1 n2)
-                         (== x (set n1 tz))
-                         (!ino tz n1)
-                         (== y (set n2 tz))
-                         (!ino tz n2)
-                         (uniono n1 n2 n))))))))
-              ((or (non-empty-set? x) (non-empty-set? y))
-               (let-values (((x y) (if (non-empty-set? x) (values x y) (values y x))))
-                 (let ((tx (non-empty-set-first x)))
-                   (bind s
-                     (fresh (n n1)
-                       (== x (set n1 tx))
-                       (!ino tx n1)
-                       (== z (set n tx))
-                       (!ino tx n)
-                       (conde
-                         ((!ino tx y) (uniono n1 y n))
-                         ((fresh (n2)
-                            (== y (set n2 tx))
-                            (!ino tx n2)
-                            (uniono n1 n2 n)))))))))
-              ;; NOTE cases (6) and (7) in Fig. 7 are handled in =/=
-              (else (with-C s (with-C-union (s->C s) (cons `(,x ,y ,z) (C->union (s->C s)))))))))))))
+                   (fresh (n n1)
+                     (== x (set n1 tx))
+                     (!ino tx n1)
+                     (== z (set n tx))
+                     (!ino tx n)
+                     (conde
+                       ((!ino tx y) (uniono n1 y n))
+                       ((fresh (n2)
+                          (== y (set n2 tx))
+                          (!ino tx n2)
+                          (uniono n1 n2 n)))))))))
+            ;; NOTE cases (6) and (7) in Fig. 7 are handled in =/=
+            (else (with-C s (with-C-union (s->C s) (cons `(,x ,y ,z) (C->union (s->C s))))))))))))
 
 (define disjo
   (lambda (x y)
     (lambda (s)
-      (let ((s (((fresh () (seto x) (seto y)) s))))
-        (if (not s)
-          #f
-          (let ((x (walk x s))
-                (y (walk y s)))
-            (cond
-              ((empty-set? x) s)
-              ((empty-set? y) s)
-              ((and (var? x) (eq? x y)) (bind s (== x empty-set)))
-              ((or (and (non-empty-set? x) (var? y))
-                   (and (non-empty-set? y) (var? x)))
-               (let-values (((x y) (if (non-empty-set? x) (values x y) (values y x))))
-                 (let ((tx (non-empty-set-first x))
-                       (rx (non-empty-set-rest x)))
-                   (bind s
-                     (fresh ()
-                       (!ino tx y)
-                       (disjo y rx))))))
-              ((and (non-empty-set? x) (non-empty-set? y))
+      (when-let* ((s (((fresh () (seto x) (seto y)) s))))
+        (let ((x (walk x s))
+              (y (walk y s)))
+          (cond
+            ((empty-set? x) s)
+            ((empty-set? y) s)
+            ((and (var? x) (eq? x y)) (bind s (== x empty-set)))
+            ((or (and (non-empty-set? x) (var? y))
+                 (and (non-empty-set? y) (var? x)))
+             (let-values (((x y) (if (non-empty-set? x) (values x y) (values y x))))
                (let ((tx (non-empty-set-first x))
-                     (rx (non-empty-set-rest x))
-                     (ty (non-empty-set-first y))
-                     (ry (non-empty-set-rest y)))
+                     (rx (non-empty-set-rest x)))
                  (bind s
                    (fresh ()
-                     (=/= tx ty)
-                     (!ino tx ry)
-                     (!ino ty rx)
-                     (disjo rx ry)))))
-              (else
-                (assert (and (var? x) (var? y)))
-                (with-C s (with-C-disj (s->C s) (cons `(,x ,y) (C->disj (s->C s)))))))))))))
+                     (!ino tx y)
+                     (disjo y rx))))))
+            ((and (non-empty-set? x) (non-empty-set? y))
+             (let ((tx (non-empty-set-first x))
+                   (rx (non-empty-set-rest x))
+                   (ty (non-empty-set-first y))
+                   (ry (non-empty-set-rest y)))
+               (bind s
+                 (fresh ()
+                   (=/= tx ty)
+                   (!ino tx ry)
+                   (!ino ty rx)
+                   (disjo rx ry)))))
+            (else
+              (assert (and (var? x) (var? y)))
+              (with-C s (with-C-disj (s->C s) (cons `(,x ,y) (C->disj (s->C s))))))))))))
 
 (define !uniono
   (lambda (x y z)
     (lambda (s)
-      (let ((s (((fresh () (seto x) (seto y) (seto z)) s))))
-        (if (not s)
-          #f
-          (let ((x (walk x s))
-                (y (walk y s))
-                (z (walk z s)))
-            (bind s
-              (fresh (n)
-                (conde
-                  ((ino n z) (!ino n x) (!ino n y))
-                  ((ino n x) (!ino n z))
-                  ((ino n y) (!ino n z)))))))))))
+      (when-let* ((s (((fresh () (seto x) (seto y) (seto z)) s))))
+        (let ((x (walk x s))
+              (y (walk y s))
+              (z (walk z s)))
+          (bind s
+            (fresh (n)
+              (conde
+                ((ino n z) (!ino n x) (!ino n y))
+                ((ino n x) (!ino n z))
+                ((ino n y) (!ino n z))))))))))
 
 (define !disjo
   (lambda (x y)
     (lambda (s)
-      (let ((s (((fresh () (seto x) (seto y)) s))))
-        (if (not s)
-          #f
-          (let ((x (walk x s))
-                (y (walk y s)))
-            (bind s
-              (fresh (n)
-                (ino n x)
-                (ino n y)))))))))
+      (when-let* ((s (((fresh () (seto x) (seto y)) s))))
+        (let ((x (walk x s))
+              (y (walk y s)))
+          (bind s
+            (fresh (n)
+              (ino n x)
+              (ino n y))))))))
 
 (define seto
   (lambda (x)

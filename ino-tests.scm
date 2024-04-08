@@ -57,3 +57,28 @@ Susceptible to both cases:
   (run* (l) (ino 1 (set ∅ 1 1)))
   '(_.0 _.0))
 |#
+
+
+(test-check "ino-duplicate"
+  (run* (r) (ino 1 (set ∅ 1 1)))
+  '(_.0))
+
+(test-check "ino-duplicate2"
+ (run* (r) (ino 1 (set (set ∅ 1) r)))
+ '(_.0))
+
+(test-check "ino-duplicate3"
+  (run* (p) (ino 1 (set p 1)))
+  '((_.0 : (set _.0))))
+
+(test-check "ino-duplicate4"
+  (run* (l) (ino 1 (set ∅ 1 1)))
+  '(_.0))
+
+(test-check "ino-duplicate9"
+ (run* (r) (ino (set ∅ 1) (set ∅ (set ∅ 1 r) (set ∅ (set ∅ r 1)))))
+ '(2))
+
+
+;; (run* (l)
+;;   (∈ 1 {1 1 | ∅}))
