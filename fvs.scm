@@ -43,14 +43,28 @@
 ;; Swapping `conde` and `==` goals also gives one answer  
 (test-check "no-free-variableso-min"
   (run* (vs) 
-     (fresh (ts)
-       ;; Introduces *6* threads
-       (conde
-         [(ino 1 ts)  (== (set vs 1) ts)]
-         [(!ino 1 ts) (== vs ts)])
-       (== (set ∅ 1) ts)
-       (!ino 1 vs)))
+    (fresh (ts)
+      ;; Introduces *6* threads
+      (conde
+        [(ino 1 ts)  (== ts (set vs 1))]
+        [(!ino 1 ts) (== vs ts)])
+      (== (set ∅ 1) ts)
+      (!ino 1 vs)))
   '(∅ ∅))
+
+#|
+(run* (vs) 
+  (fresh (ts)
+    ;; Introduces *6* threads
+    (conde
+      [(ino 1 ts)  (== ts (set vs 1))]
+      [(!ino 1 ts) (== vs ts)])
+    (== (set ∅ 1) ts)
+    (!ino 1 vs)))
+
+Threads:
+> [ts] [vs]
+|#
 
 (test-check "no-free-variableso-nested"
   (run* (q) (free-variableso `(lambda (y) (lambda (z) y)) q))
